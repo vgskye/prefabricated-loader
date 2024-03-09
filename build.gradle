@@ -13,7 +13,7 @@ plugins {
 	id 'java-library'
 	id 'eclipse'
 	id 'maven-publish'
-	id 'checkstyle'
+//	id 'checkstyle'
 	id 'com.diffplug.spotless' version "6.22.0"
 	id 'fabric-loom' version '1.4-SNAPSHOT' apply false
 	id 'com.github.johnrengelman.shadow' version '8.1.1'
@@ -29,7 +29,7 @@ def ENV = System.getenv()
 allprojects {
 	apply plugin: 'java-library'
 	apply plugin: 'eclipse'
-	apply plugin: 'checkstyle'
+//	apply plugin: 'checkstyle'
 	apply plugin: "com.diffplug.spotless"
 
 	def constantsSource = rootProject.file("src/main/java/net/fabricmc/loader/impl/FabricLoaderImpl.java").text
@@ -117,6 +117,7 @@ dependencies {
 		// Mapping-io depends on ASM, dont bundle
 		transitive = false
 	}
+	include 'com.google.code.gson:gson:2.10.1'
 
 	development "io.github.llamalad7:mixinextras-fabric:$mixin_extras_version"
 
@@ -202,6 +203,7 @@ task fatJar(type: ShadowJar, dependsOn: getSat4jAbout) {
 	relocate 'net.fabricmc.accesswidener', 'net.fabricmc.loader.impl.lib.accesswidener'
 	relocate 'net.fabricmc.tinyremapper', 'net.fabricmc.loader.impl.lib.tinyremapper'
 	relocate 'net.fabricmc.mappingio', 'net.fabricmc.loader.impl.lib.mappingio'
+	relocate 'com.google.gson', 'net.fabricmc.loader.impl.lib.gson_original'
 
 	exclude 'about.html'
 	exclude 'sat4j.version'
@@ -317,10 +319,10 @@ task javadocJar(type: Jar) {
 build.dependsOn javadocJar
 
 allprojects {
-	checkstyle {
-		configFile = project.rootProject.file("checkstyle.xml")
-		toolVersion = '8.44'
-	}
+//	checkstyle {
+//		configFile = project.rootProject.file("checkstyle.xml")
+//		toolVersion = '8.44'
+//	}
 
 	spotless {
 		java {

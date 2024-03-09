@@ -86,8 +86,8 @@ public final class FabricLoaderImpl extends net.fabricmc.loader.FabricLoader {
 	private List<ModCandidate> modCandidates;
 	protected List<ModContainerImpl> mods = new ArrayList<>();
 
-	private final Map<String, LanguageAdapter> adapterMap = new HashMap<>();
-	private final EntrypointStorage entrypointStorage = new EntrypointStorage();
+	public final Map<String, LanguageAdapter> adapterMap = new HashMap<>();
+	public final EntrypointStorage entrypointStorage = new EntrypointStorage();
 	private final AccessWidener accessWidener = new AccessWidener();
 
 	private final ObjectShare objectShare = new ObjectShareImpl();

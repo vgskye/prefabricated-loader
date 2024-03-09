@@ -54,6 +54,8 @@ import net.fabricmc.loader.impl.util.UrlUtil;
 import net.fabricmc.loader.impl.util.log.Log;
 import net.fabricmc.loader.impl.util.log.LogCategory;
 
+import org.spongepowered.asm.mixin.transformer.throwables.ReEntrantTransformerError;
+
 final class KnotClassDelegate<T extends ClassLoader & ClassLoaderAccess> implements KnotClassLoaderInterface {
 	private static final boolean LOG_CLASS_LOAD = System.getProperty(SystemProperties.DEBUG_LOG_CLASS_LOAD) != null;
 	private static final boolean LOG_CLASS_LOAD_ERRORS = LOG_CLASS_LOAD || System.getProperty(SystemProperties.DEBUG_LOG_CLASS_LOAD_ERRORS) != null;
@@ -123,7 +125,8 @@ final class KnotClassDelegate<T extends ClassLoader & ClassLoaderAccess> impleme
 		transformInitialized = true;
 	}
 
-	private IMixinTransformer getMixinTransformer() {
+	@Override
+	public IMixinTransformer getMixinTransformer() {
 		assert mixinTransformer != null;
 		return mixinTransformer;
 	}
@@ -431,6 +434,11 @@ final class KnotClassDelegate<T extends ClassLoader & ClassLoaderAccess> impleme
 	@Override
 	public byte[] getPreMixinClassBytes(String name) {
 		return getPreMixinClassByteArray(name, true);
+	}
+
+	@Override
+	public byte[] getPostMixinClassBytes(String name) {
+		return getPostMixinClassByteArray(name, true);
 	}
 
 	/**

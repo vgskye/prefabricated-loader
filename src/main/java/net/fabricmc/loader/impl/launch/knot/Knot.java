@@ -16,38 +16,62 @@
 
 package net.fabricmc.loader.impl.launch.knot;
 
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Queue;
 import java.util.ServiceLoader;
+import java.util.Stack;
 import java.util.jar.Manifest;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
+import com.google.gson.Gson;
+
+import com.llamalad7.mixinextras.MixinExtrasBootstrap;
+
 import net.fabricmc.api.EnvType;
+import net.fabricmc.loader.api.LanguageAdapter;
+import net.fabricmc.loader.api.ModContainer;
 import net.fabricmc.loader.api.entrypoint.PreLaunchEntrypoint;
 import net.fabricmc.loader.impl.FabricLoaderImpl;
 import net.fabricmc.loader.impl.FormattedException;
+import net.fabricmc.loader.impl.entrypoint.EntrypointStorage;
 import net.fabricmc.loader.impl.game.GameProvider;
 import net.fabricmc.loader.impl.launch.FabricLauncherBase;
 import net.fabricmc.loader.impl.launch.FabricMixinBootstrap;
+import net.fabricmc.loader.impl.util.FileSystemUtil;
 import net.fabricmc.loader.impl.util.LoaderUtil;
 import net.fabricmc.loader.impl.util.SystemProperties;
 import net.fabricmc.loader.impl.util.UrlUtil;
 import net.fabricmc.loader.impl.util.log.Log;
 import net.fabricmc.loader.impl.util.log.LogCategory;
+
+import net.fabricmc.mappingio.format.tiny.Tiny2FileWriter;
+import net.fabricmc.mappingio.tree.MappingTree;
+
+import org.spongepowered.asm.mixin.MixinEnvironment;
+import org.spongepowered.asm.mixin.transformer.IMixinTransformer;
+import org.spongepowered.asm.service.ISyntheticClassInfo;
 
 public final class Knot extends FabricLauncherBase {
 	private static final boolean IS_DEVELOPMENT = Boolean.parseBoolean(System.getProperty(SystemProperties.DEVELOPMENT, "false"));
@@ -59,6 +83,40 @@ public final class Knot extends FabricLauncherBase {
 	private final List<Path> classPath = new ArrayList<>();
 	private GameProvider provider;
 	private boolean unlocked;
+	private final ArrayList<Path> toShadow = new ArrayList<>();
+	private static final Gson gson = new Gson();
+	private static class Entrypoint {
+		String mod;
+		String adapter;
+		String value;
+
+		private Entrypoint(String mod, String adapter, String value) {
+			this.mod = mod;
+			this.adapter = adapter;
+			this.value = value;
+		}
+	}
+	private static class FrozenMeta {
+		Map<String, List<Entrypoint>> entrypoints;
+		Map<String, String> languageAdapters;
+		List<String> mods;
+		String envType;
+		String entrypoint;
+
+		private FrozenMeta(
+				Map<String, List<Entrypoint>> entrypoints,
+				Map<String, String> languageAdapters,
+				List<String> mods,
+				String envType,
+				String entrypoint
+		) {
+			this.entrypoints = entrypoints;
+			this.languageAdapters = languageAdapters;
+			this.mods = mods;
+			this.envType = envType;
+			this.entrypoint = entrypoint;
+		}
+	}
 
 	public static void launch(String[] args, EnvType type) {
 		setupUncaughtExceptionHandler();
@@ -70,8 +128,174 @@ public final class Knot extends FabricLauncherBase {
 			if (knot.provider == null) {
 				throw new IllegalStateException("Game provider was not initialized! (Knot#init(String[]))");
 			}
-
-			knot.provider.launch(cl);
+			try {
+				FabricLoaderImpl loader = FabricLoaderImpl.INSTANCE;
+				Path base = loader.getGameDir().resolve("mod_assets");
+				List<String> mods = new ArrayList<>(loader.getAllMods().size());
+				for (ModContainer mod : loader.getAllMods()) {
+					if (mod.getMetadata().getType().equals("builtin")) {
+						continue;
+					}
+					mods.add(mod.getMetadata().getId());
+					Path forMod = base.resolve(mod.getMetadata().getId());
+					System.err.println("Extracting the assets for " + mod.getMetadata().getName());
+					Files.createDirectories(forMod);
+					for (Path path : mod.getRootPaths()) {
+						Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
+							@Override
+							public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+								if (!file.toString().endsWith(".class")) {
+									byte[] contents = Files.readAllBytes(file);
+									Files.createDirectories(forMod.resolve(path.relativize(file).toString()).getParent());
+									Files.write(forMod.resolve(path.relativize(file).toString()), contents);
+								}
+								return FileVisitResult.CONTINUE;
+							}
+						});
+					}
+				}
+				FileSystemUtil.FileSystemDelegate uber = FileSystemUtil.getJarFileSystem(Paths.get("uber.jar"), true);
+				Path uberRoot = uber.get().getRootDirectories().iterator().next();
+				for (Path path: knot.toShadow) {
+					System.err.println("Shadowing " + path.getFileName());
+					FileSystemUtil.FileSystemDelegate delegate = FileSystemUtil.getJarFileSystem(path, false);
+					for (Path directory : delegate.get().getRootDirectories()) {
+						Files.walkFileTree(directory, new SimpleFileVisitor<Path>() {
+							@Override
+							public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+								if (file.toString().endsWith(".SF")) {
+									return FileVisitResult.CONTINUE;
+								}
+								if (file.toString().endsWith(".class")) {
+									String fileName = directory.relativize(file).toString();
+									String rawClassName = fileName.replace(delegate.get().getSeparator(), ".");
+									String className = rawClassName.substring(0, rawClassName.length() - 6);
+									try {
+										byte[] clazz = knot.getMixinedClassByteArray(className);
+										Files.createDirectories(uberRoot.resolve(directory.relativize(file).toString()).getParent());
+										Files.write(uberRoot.resolve(directory.relativize(file).toString()), clazz);
+									} catch (Exception e) {
+										try {
+											byte[] clazz = Files.readAllBytes(file);
+											Files.createDirectories(uberRoot.resolve(directory.relativize(file).toString()).getParent());
+											Files.write(uberRoot.resolve(directory.relativize(file).toString()), clazz);
+											System.err.println(className + " did not exist after mixin!");
+										} catch (Exception ex) {
+											System.err.println("Failed to shadow " + className);
+										}
+									}
+								} else {
+									byte[] contents = Files.readAllBytes(file);
+									Files.createDirectories(uberRoot.resolve(directory.relativize(file).toString()).getParent());
+									Files.write(uberRoot.resolve(directory.relativize(file).toString()), contents);
+								}
+								return FileVisitResult.CONTINUE;
+							}
+						});
+					}
+					delegate.close();
+				}
+				System.err.println("Injecting Mixin synthetics");
+				IMixinTransformer transformer = knot.classLoader.getMixinTransformer();
+				// Gross Reflection Hacks
+				Class<?> transformerImpl = Class.forName("org.spongepowered.asm.mixin.transformer.MixinTransformer");
+				Field syntheticClassRegistry = transformerImpl.getDeclaredField("syntheticClassRegistry");
+				syntheticClassRegistry.setAccessible(true);
+				Object registryInstance = syntheticClassRegistry.get(transformer);
+				Class<?> syntheticClassRegistryClass = Class.forName("org.spongepowered.asm.mixin.transformer.SyntheticClassRegistry");
+				Field classes = syntheticClassRegistryClass.getDeclaredField("classes");
+				classes.setAccessible(true);
+				Map<String, ISyntheticClassInfo> classesField = (Map<String, ISyntheticClassInfo>) classes.get(registryInstance);
+				for (String rawName : classesField.keySet()) {
+					String className = rawName.replace("/", ".");
+					try {
+						byte[] clazz = transformer.transformClassBytes(className, className, null);
+						String path = className.replace(".", uber.get().getSeparator()) + ".class";
+						Files.createDirectories(uberRoot.resolve(path).getParent());
+						Files.write(uberRoot.resolve(path), clazz);
+					} catch (Exception e) {
+						System.err.println("Failed to add synthetic class " + className);
+					}
+				}
+				System.err.println("Injecting MixinExtras synthetics");
+				// Gross Reflection Hacks, Part 2
+				Class<?> classGenUtils = Class.forName("com.llamalad7.mixinextras.utils.ClassGenUtils", true, cl);
+				Field definitionsField = classGenUtils.getDeclaredField("DEFINITIONS");
+				definitionsField.setAccessible(true);
+				Map<String, byte[]> definitions = (Map<String, byte[]>) definitionsField.get(null);
+				for (Map.Entry<String, byte[]> entry : definitions.entrySet()) {
+					String className = entry.getKey();
+					try {
+						byte[] clazz = entry.getValue();
+						String path = className.replace(".", uber.get().getSeparator()) + ".class";
+						Files.createDirectories(uberRoot.resolve(path).getParent());
+						Files.write(uberRoot.resolve(path), clazz);
+					} catch (Exception e) {
+						System.err.println("Failed to add MixinExtras synthetic class " + className);
+						e.printStackTrace();
+					}
+				}
+				System.err.println("Adding runtime");
+				FileSystemUtil.FileSystemDelegate runtime = FileSystemUtil.getJarFileSystem(Paths.get("runtime.jar"), false);
+				for (Path directory : runtime.get().getRootDirectories()) {
+					Files.walkFileTree(directory, new SimpleFileVisitor<Path>() {
+						@Override
+						public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+							byte[] contents = Files.readAllBytes(file);
+							Files.createDirectories(uberRoot.resolve(directory.relativize(file).toString()).getParent());
+							Files.write(uberRoot.resolve(directory.relativize(file).toString()), contents);
+							return FileVisitResult.CONTINUE;
+						}
+					});
+				}
+				runtime.close();
+				uber.close();
+				System.err.println("Writing mappings");
+				MappingTree mapping = knot.getMappingConfiguration().getMappings();
+				BufferedWriter mappingsWriter = Files.newBufferedWriter(loader.getGameDir().resolve("mappings.tiny"));
+				Tiny2FileWriter tinyWriter = new Tiny2FileWriter(mappingsWriter, false);
+				mapping.accept(tinyWriter);
+				tinyWriter.close();
+				mappingsWriter.close();
+				System.err.println("Writing frozen loader state");
+				Map<String, List<Entrypoint>> entrypoints = new HashMap<>(loader.entrypointStorage.entryMap.size());
+				for (Map.Entry<String, List<EntrypointStorage.Entry>> entry : loader.entrypointStorage.entryMap.entrySet()) {
+					List<Entrypoint> entrypointList = new ArrayList<>(entry.getValue().size());
+					for (EntrypointStorage.Entry entrypoint : entry.getValue()) {
+						Entrypoint toFreeze = new Entrypoint(
+								entrypoint.getModContainer().getMetadata().getId(),
+								entrypoint.getLanguageAdapter(),
+								entrypoint.getValue()
+						);
+						entrypointList.add(toFreeze);
+					}
+					entrypoints.put(entry.getKey(), entrypointList);
+				}
+				Map<String, String> languageAdapters = new HashMap<>(loader.adapterMap.size());
+				for (Map.Entry<String, LanguageAdapter> entry : loader.adapterMap.entrySet()) {
+					languageAdapters.put(entry.getKey(), entry.getValue().getClass().getName());
+				}
+				String entrypoint = knot.getEntrypoint();
+				String envType = "";
+				switch (knot.envType) {
+					case CLIENT:
+						envType = "client";
+						break;
+					case SERVER:
+						envType = "server";
+						break;
+				}
+				FrozenMeta toFreeze = new FrozenMeta(entrypoints, languageAdapters, mods, envType, entrypoint);
+				BufferedWriter writer = Files.newBufferedWriter(loader.getGameDir().resolve("prefabricated_frozen.json"), StandardCharsets.UTF_8);
+				gson.toJson(toFreeze, writer);
+				writer.close();
+				System.err.println("Current launch args: " + String.join(" ", loader.getLaunchArguments(false)));
+				BufferedWriter argsWriter = Files.newBufferedWriter(loader.getGameDir().resolve("current_args.txt"), StandardCharsets.UTF_8);
+				argsWriter.write(String.join(" ", loader.getLaunchArguments(false)));
+				argsWriter.close();
+			} catch (Throwable e) {
+				throw new RuntimeException(e);
+			}
 		} catch (FormattedException e) {
 			handleFormattedException(e);
 		}
@@ -155,12 +379,6 @@ public final class Knot extends FabricLauncherBase {
 
 		provider.unlockClassPath(this);
 		unlocked = true;
-
-		try {
-			loader.invokeEntrypoints("preLaunch", PreLaunchEntrypoint.class, PreLaunchEntrypoint::onPreLaunch);
-		} catch (RuntimeException e) {
-			throw FormattedException.ofLocalized("exception.initializerFailure", e);
-		}
 
 		return cl;
 	}
@@ -271,6 +489,8 @@ public final class Knot extends FabricLauncherBase {
 
 		classLoader.setAllowedPrefixes(path, allowedPrefixes);
 		classLoader.addCodeSource(path);
+
+		toShadow.add(path);
 	}
 
 	@Override
@@ -319,6 +539,11 @@ public final class Knot extends FabricLauncherBase {
 		} else {
 			return classLoader.getRawClassBytes(name);
 		}
+	}
+
+	public byte[] getMixinedClassByteArray(String name) {
+		if (!unlocked) throw new IllegalStateException("early getClassByteArray access");
+		return classLoader.getPostMixinClassBytes(name);
 	}
 
 	@Override

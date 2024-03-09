@@ -34,11 +34,15 @@ import net.fabricmc.loader.impl.util.log.Log;
 import net.fabricmc.loader.impl.util.log.LogCategory;
 
 public final class EntrypointStorage {
-	interface Entry {
+	public interface Entry {
 		<T> T getOrCreate(Class<T> type) throws Exception;
 		boolean isOptional();
 
 		ModContainerImpl getModContainer();
+
+		String getLanguageAdapter();
+
+		String getValue();
 	}
 
 	@SuppressWarnings("deprecation")
@@ -87,19 +91,31 @@ public final class EntrypointStorage {
 		public ModContainerImpl getModContainer() {
 			return mod;
 		}
+
+		@Override
+		public String getLanguageAdapter() {
+			return languageAdapter;
+		}
+
+		@Override
+		public String getValue() {
+			return value;
+		}
 	}
 
 	private static final class NewEntry implements Entry {
 		private final ModContainerImpl mod;
 		private final LanguageAdapter adapter;
+		private final String languageAdapter;
 		private final String value;
 		private final Map<Class<?>, Object> instanceMap;
 
-		NewEntry(ModContainerImpl mod, LanguageAdapter adapter, String value) {
+		NewEntry(ModContainerImpl mod, LanguageAdapter adapter, String value, String languageAdapter) {
 			this.mod = mod;
 			this.adapter = adapter;
 			this.value = value;
 			this.instanceMap = new IdentityHashMap<>(1);
+			this.languageAdapter = languageAdapter;
 		}
 
 		@Override
@@ -132,9 +148,19 @@ public final class EntrypointStorage {
 		public ModContainerImpl getModContainer() {
 			return mod;
 		}
+
+		@Override
+		public String getLanguageAdapter() {
+			return languageAdapter;
+		}
+
+		@Override
+		public String getValue() {
+			return value;
+		}
 	}
 
-	private final Map<String, List<Entry>> entryMap = new HashMap<>();
+	public final Map<String, List<Entry>> entryMap = new HashMap<>();
 
 	private List<Entry> getOrCreateEntries(String key) {
 		return entryMap.computeIfAbsent(key, (z) -> new ArrayList<>());
@@ -155,7 +181,7 @@ public final class EntrypointStorage {
 
 		Log.debug(LogCategory.ENTRYPOINT, "Registering new-style initializer %s for mod %s (key %s)", metadata.getValue(), modContainer.getMetadata().getId(), key);
 		getOrCreateEntries(key).add(new NewEntry(
-				modContainer, adapterMap.get(metadata.getAdapter()), metadata.getValue()
+				modContainer, adapterMap.get(metadata.getAdapter()), metadata.getValue(), metadata.getAdapter()
 				));
 	}
 

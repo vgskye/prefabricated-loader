@@ -24,6 +24,8 @@ import java.util.jar.Manifest;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.loader.impl.game.GameProvider;
 
+import org.spongepowered.asm.mixin.transformer.IMixinTransformer;
+
 interface KnotClassLoaderInterface {
 	@SuppressWarnings("resource")
 	static KnotClassLoaderInterface create(boolean useCompatibility, boolean isDevelopment, EnvType envType, GameProvider provider) {
@@ -49,4 +51,6 @@ interface KnotClassLoaderInterface {
 
 	byte[] getRawClassBytes(String name) throws IOException;
 	byte[] getPreMixinClassBytes(String name);
+	byte[] getPostMixinClassBytes(String name);
+	IMixinTransformer getMixinTransformer();
 }
